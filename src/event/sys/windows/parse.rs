@@ -43,11 +43,37 @@ enum WindowsKeyEvent {
     Surrogate(u16),
 }
 
+#[derive(Default)]
+pub(crate) struct SurrogateBuffers {
+    press: Option<u16>,
+    release: Option<u16>,
+    alt_code: Option<u16>,
+}
+
+pub(crate) fn is_alt_code_commit(key: &KeyEventRecord) -> bool {
+    key.virtual_key_code as i32 == VK_MENU && !key.key_down && key.u_char != 0
+}
+
 pub(crate) fn handle_key_event(
     key_event: KeyEventRecord,
-    surrogate_buffer: &mut Option<u16>,
+    surrogate_buffers: &mut SurrogateBuffers,
 ) -> Option<Event> {
     let windows_key_event = parse_key_event_record(&key_event)?;
+    // ConPTY interleaves key-up records with the two UTF-16 key-down units.
+    // Each event kind must assemble its own pair without clearing the other.
+    let alt_code = is_alt_code_commit(&key_event);
+    let kind = if key_event.key_down || alt_code {
+        KeyEventKind::Press
+    } else {
+        KeyEventKind::Release
+    };
+    let surrogate_buffer = if alt_code {
+        &mut surrogate_buffers.alt_code
+    } else if key_event.key_down {
+        &mut surrogate_buffers.press
+    } else {
+        &mut surrogate_buffers.release
+    };
     match windows_key_event {
         WindowsKeyEvent::KeyEvent(key_event) => {
             // Discard any buffered surrogate value if another valid key event comes before the
@@ -58,7 +84,7 @@ pub(crate) fn handle_key_event(
         WindowsKeyEvent::Surrogate(new_surrogate) => {
             let ch = handle_surrogate(surrogate_buffer, new_surrogate)?;
             let modifiers = KeyModifiers::from(&key_event.control_key_state);
-            let key_event = KeyEvent::new(KeyCode::Char(ch), modifiers);
+            let key_event = KeyEvent::new_with_kind(KeyCode::Char(ch), modifiers, kind);
             Some(Event::Key(key_event))
         }
     }
@@ -203,7 +229,7 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
 
     // We normally ignore all key release events, but we will make an exception for an Alt key
     // release if it carries a u_char value, as this indicates an Alt code.
-    let is_alt_code = virtual_key_code == VK_MENU && !key_event.key_down && key_event.u_char != 0;
+    let is_alt_code = is_alt_code_commit(key_event);
     if is_alt_code {
         let utf16 = key_event.u_char;
         match utf16 {
@@ -216,12 +242,9 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
                 // values.
                 let ch = std::char::from_u32(unicode_scalar_value as u32).unwrap();
                 let key_code = KeyCode::Char(ch);
-                let kind = if key_event.key_down {
-                    KeyEventKind::Press
-                } else {
-                    KeyEventKind::Release
-                };
-                let key_event = KeyEvent::new_with_kind(key_code, modifiers, kind);
+                // This key-up commits an Alt-code character; it is text input,
+                // rather than a release of an already delivered character.
+                let key_event = KeyEvent::new(key_code, modifiers);
                 return Some(WindowsKeyEvent::KeyEvent(key_event));
             }
         }

@@ -24,6 +24,17 @@ fn could_not_parse_event_error() -> io::Error {
     io::Error::other("Could not parse an event.")
 }
 
+fn raw_mode_enabled() -> bool {
+    #[cfg(unix)]
+    {
+        crate::terminal::sys::is_raw_mode_enabled()
+    }
+    #[cfg(windows)]
+    {
+        crate::terminal::is_raw_mode_enabled().unwrap_or(false)
+    }
+}
+
 fn parse_osc(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     debug_assert!(buffer.starts_with(b"\x1B]"));
 
@@ -147,9 +158,9 @@ pub(crate) fn parse_event(
         // newlines as input is because the terminal converts \r into \n for us. When we
         // enter raw mode, we disable that, so \n no longer has any meaning - it's better to
         // use Ctrl+J. Waiting to handle it here means it gets picked up later
-        b'\n' if !crate::terminal::sys::is_raw_mode_enabled() => Ok(Some(InternalEvent::Event(
-            Event::Key(KeyCode::Enter.into()),
-        ))),
+        b'\n' if !raw_mode_enabled() => Ok(Some(InternalEvent::Event(Event::Key(
+            KeyCode::Enter.into(),
+        )))),
         b'\t' => Ok(Some(InternalEvent::Event(Event::Key(KeyCode::Tab.into())))),
         b'\x7F' => Ok(Some(InternalEvent::Event(Event::Key(
             KeyCode::Backspace.into(),
@@ -602,7 +613,7 @@ pub(crate) fn parse_csi_u_encoded_key_code(buffer: &[u8]) -> io::Result<Option<I
                     // newlines as input is because the terminal converts \r into \n for us. When we
                     // enter raw mode, we disable that, so \n no longer has any meaning - it's better to
                     // use Ctrl+J. Waiting to handle it here means it gets picked up later
-                    '\n' if !crate::terminal::sys::is_raw_mode_enabled() => KeyCode::Enter,
+                    '\n' if !raw_mode_enabled() => KeyCode::Enter,
                     '\t' => {
                         if modifiers.contains(KeyModifiers::SHIFT) {
                             KeyCode::BackTab
